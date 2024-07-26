@@ -1,63 +1,78 @@
-
 ---
-- name: Install java and net-tools
-  hosts: server
+- name: Install pre-requisites
+  hosts: servers
+  become: yes  # Ensure privilege escalation if needed
   tasks:
-    - name: Update apt repo and cache
-      ansible.builtin.apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
-    - name: Install Java 8
-      ansible.builtin.apt: name=openjdk-8-jre-headless
-    - name: Install net-tools
-      ansible.builtin.apt: name=net-tools
+    - name: Update repo and cache
+      ansible.builtin.apt:
+        update_cache: yes
+        force_apt_get: yes
 
-- name: Download and unpack Nexus installer
-  hosts: server
-  tasks:
-    - name: Check nexus folder stats
+    - name: Install Java
+      ansible.builtin.apt:
+        name: openjdk-8-jre-headless
+
+    - name: Install net-tools
+      ansible.builtin.apt:
+        name: net-tools
+
+    - name: Check if Nexus folder exists
       ansible.builtin.stat:
         path: /opt/nexus
       register: stat_result
+
     - name: Download Nexus
       ansible.builtin.get_url:
-        url: https://download.sonatype.com/nexus/3/nexus-3.60.0-02-unix.tar.gz
+        url: https://download.sonatype.com/nexus/3/nexus-3.70.1-02-java8-unix.tar.gz
         dest: /opt/
-      register: download_result
-    - name: Untar nexus installer
+      when: not stat_result.stat.exists
+
+    - name: Untar Nexus package
       ansible.builtin.unarchive:
-        src: "{{download_result.dest}}"
+        src: /opt/nexus-3.70.1-02-java8-unix.tar.gz
         dest: /opt/
         remote_src: yes
       when: not stat_result.stat.exists
-    - name: Find nexus folder
+
+- name: Rename Nexus folder
+  hosts: servers
+  become: yes  # Ensure privilege escalation if needed
+  tasks:
+    - name: Find Nexus folder
       ansible.builtin.find:
-        paths: /opt
-        pattern: "nexus-*"
+        paths: /opt/
+        patterns: "nexus-*"
         file_type: directory
       register: find_result
-    - name: Rename nexus folder
-      command: mv /opt/nexus-3.60.0-02 /opt/nexus
-      when: not stat_result.stat.exists
 
+    - name: Rename Nexus folder
+      ansible.builtin.command:
+        cmd: mv {{ find_result.files[0].path }} /opt/nexus
+      when: find_result.matched > 0
 
-- name: Create nexus user to own nexus folders
-  hosts: server
+- name: Create Nexus group and users
+  hosts: servers
+  become: yes  # Ensure privilege escalation if needed
   tasks:
-    - name: Ensure group nexus exists
+    - name: Create nexus group
       ansible.builtin.group:
         name: nexus
         state: present
+
     - name: Create nexus user
       ansible.builtin.user:
         name: nexus
         group: nexus
-    - name: Make nexus user owner of nexus folder
+
+    - name: Make nexus user owner of Nexus directory
       ansible.builtin.file:
         path: /opt/nexus
         state: directory
         owner: nexus
         group: nexus
         recurse: yes
-    - name: Make nexus user owner of sonatype-work folder
+
+    - name: Give complete ownership of sonatype-work directory
       ansible.builtin.file:
         path: /opt/sonatype-work
         state: directory
@@ -65,15 +80,41 @@
         group: nexus
         recurse: yes
 
-- name: Start nexus with nexus user
-  hosts: server
-  become: True
-  become_user: nexus
+
+- name: Start Nexus with nexus user
+  hosts: servers
+  become: true
   tasks:
-    - name: Set run_as_user nexus
+    - name: Set run as nexus
       ansible.builtin.lineinfile:
         path: /opt/nexus/bin/nexus.rc
         regexp: '^#run_as_user=""'
         line: run_as_user="nexus"
-    - name: Start nexus
-      command: /opt/nexus/bin/nexus start
+      become_user: nexus
+
+    - name: Start Nexus
+      ansible.builtin.command: /opt/nexus/bin/nexus start
+      become_user: nexus
+
+- name: Verify whether Nexus is running
+  hosts: servers
+  tasks:
+    - name: Check Nexus process
+      ansible.builtin.shell: ps aux | grep nexus | grep -v grep
+      register: app_status
+
+    - name: Display Nexus process status
+      ansible.builtin.debug:
+        msg: "{{ app_status.stdout_lines }}"
+
+    - name: Wait a minute
+      ansible.builtin.pause:
+        minutes: 1
+
+    - name: Netstat to check network status
+      ansible.builtin.shell: netstat -plnt
+      register: netstat_output
+
+    - name: Display network status
+      ansible.builtin.debug:
+        msg: "{{ netstat_output.stdout_lines }}"
